@@ -1,0 +1,1310 @@
+import { useEffect, useMemo, useState } from 'react';
+import * as XLSX from 'xlsx';
+
+const STORAGE_KEY = 'pallet-monitoring-system-v1';
+
+const defaultData = {
+  users: [
+    { username: 'admin', password: 'admin', role: 'admin' },
+    { username: 'operator', password: 'operator', role: 'operator' },
+    { username: 'pengunjung', password: 'pengunjung', role: 'pengunjung' },
+  ],
+  plants: [
+    { code: 'PL-01', name: 'Plant Bandung' },
+    { code: 'PL-02', name: 'Plant Surabaya' },
+    { code: 'PL-03', name: 'Plant Medan' },
+  ],
+  warehouses: [
+    { code: 'WH-001', name: 'Gudang A' },
+    { code: 'WH-002', name: 'Gudang B' },
+    { code: 'WH-003', name: 'Gudang C' },
+  ],
+  expediteurs: [
+    { code: 'EXP-001', name: 'CV Mitra Logistics' },
+    { code: 'EXP-002', name: 'PT Sukses Jaya' },
+    { code: 'EXP-003', name: 'PT Mandiri Cargo' },
+  ],
+  transactionTypes: [
+    { code: 'TT-01', name: 'Pallet In' },
+    { code: 'TT-02', name: 'Pallet Out' },
+    { code: 'TT-03', name: 'Transfer Internal' },
+  ],
+  locations: ['Area Receiving', 'Area Staging', 'Area Loading', 'Area Sorting', 'Cold Storage'],
+  transactions: [
+    {
+      id: 1,
+      tanggal: '2026-09-30',
+      plant: 'PL-01',
+      shift: 'A',
+      jenisTransaksi: 'TT-01',
+      lokasi: 'Area Receiving',
+      nomorTransaksi: 'TX-001',
+      kodeEkspeditur: 'EXP-001',
+      namaEkspeditur: 'CV Mitra Logistics',
+      kodeGudangAsal: 'WH-001',
+      namaGudangAsal: 'Gudang A',
+      kodeGudangTujuan: 'WH-002',
+      namaGudangTujuan: 'Gudang B',
+      inRfi: 12,
+      inTbr: 8,
+      inBer: 3,
+      outRfi: 0,
+      outTbr: 0,
+      outBer: 0,
+      totalIn: 23,
+      totalOut: 0,
+      total: 23,
+      catatan: 'Transaksi normal',
+      upload: '',
+    },
+    {
+      id: 2,
+      tanggal: '2026-09-30',
+      plant: 'PL-02',
+      shift: 'B',
+      jenisTransaksi: 'TT-02',
+      lokasi: 'Area Loading',
+      nomorTransaksi: 'TX-002',
+      kodeEkspeditur: 'EXP-002',
+      namaEkspeditur: 'PT Sukses Jaya',
+      kodeGudangAsal: 'WH-002',
+      namaGudangAsal: 'Gudang B',
+      kodeGudangTujuan: 'WH-003',
+      namaGudangTujuan: 'Gudang C',
+      inRfi: 0,
+      inTbr: 0,
+      inBer: 0,
+      outRfi: 6,
+      outTbr: 4,
+      outBer: 2,
+      totalIn: 0,
+      totalOut: 12,
+      total: 12,
+      catatan: 'Pengiriman sesuai jadwal',
+      upload: '',
+    },
+  ],
+};
+
+const getStoredData = () => {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+    return structuredClone(defaultData);
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultData));
+    return structuredClone(defaultData);
+  }
+};
+
+const saveData = (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+const getShiftLabel = () => {
+  const hour = new Date().getHours();
+  if (hour >= 6 && hour < 14) return 'A';
+  if (hour >= 14 && hour < 22) return 'B';
+  return 'C';
+};
+
+const getTypeName = (typeCode, transactionTypes) => {
+  const match = transactionTypes.find((type) => type.code === typeCode);
+  return match ? match.name : typeCode;
+};
+
+const getNameByCode = (items, code, key = 'code', label = 'name') => {
+  const match = items.find((item) => item[key].toLowerCase() === String(code).toLowerCase());
+  return match ? match[label] : '';
+};
+
+function App() {
+  const [data, setData] = useState(() => getStoredData());
+  const [user, setUser] = useState(() => {
+    const saved = sessionStorage.getItem('pallet-user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [activeSection, setActiveSection] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('tab1');
+  const [txSearch, setTxSearch] = useState('');
+  const [previewImage, setPreviewImage] = useState('');
+  const [previewName, setPreviewName] = useState('');
+
+  const [loginForm, setLoginForm] = useState({
+    role: 'admin',
+    username: 'admin',
+    password: 'admin',
+  });
+
+  const [form, setForm] = useState({
+    tanggal: new Date().toISOString().slice(0, 10),
+    plant: 'PL-01',
+    shift: getShiftLabel(),
+    jenisTransaksi: 'TT-01',
+    lokasi: 'Area Receiving',
+    nomorTransaksi: '',
+    kodeEkspeditur: '',
+    namaEkspeditur: '',
+    kodeGudangAsal: '',
+    namaGudangAsal: '',
+    kodeGudangTujuan: '',
+    namaGudangTujuan: '',
+    inRfi: 0,
+    inTbr: 0,
+    inBer: 0,
+    outRfi: 0,
+    outTbr: 0,
+    outBer: 0,
+    totalIn: 0,
+    totalOut: 0,
+    total: 0,
+    catatan: '',
+    upload: '',
+  });
+
+  const [warehouseForm, setWarehouseForm] = useState({ code: '', name: '' });
+  const [expediteurForm, setExpediteurForm] = useState({ code: '', name: '' });
+  const [plantForm, setPlantForm] = useState({ code: '', name: '' });
+  const [typeForm, setTypeForm] = useState({ code: '', name: '' });
+
+  const canManage = user?.role === 'admin' || user?.role === 'operator';
+
+  useEffect(() => {
+    saveData(data);
+  }, [data]);
+
+  useEffect(() => {
+    if (user) {
+      sessionStorage.setItem('pallet-user', JSON.stringify(user));
+    } else {
+      sessionStorage.removeItem('pallet-user');
+    }
+  }, [user]);
+
+  useEffect(() => {
+    const totalIn = Number(form.inRfi || 0) + Number(form.inTbr || 0) + Number(form.inBer || 0);
+    const totalOut = Number(form.outRfi || 0) + Number(form.outTbr || 0) + Number(form.outBer || 0);
+    setForm((prev) => ({
+      ...prev,
+      totalIn,
+      totalOut,
+      total: totalIn + totalOut,
+    }));
+  }, [form.inRfi, form.inTbr, form.inBer, form.outRfi, form.outTbr, form.outBer]);
+
+  const filteredTransactions = useMemo(() => {
+    const q = txSearch.trim().toLowerCase();
+    if (!q) return data.transactions;
+
+    return data.transactions.filter((item) => {
+      const haystack = [
+        item.nomorTransaksi,
+        item.plant,
+        item.lokasi,
+        item.namaEkspeditur,
+        item.namaGudangAsal,
+        item.namaGudangTujuan,
+        item.catatan,
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [data.transactions, txSearch]);
+
+  const handleLogin = () => {
+    const { role, username, password } = loginForm;
+    const matched = data.users.find(
+      (item) => item.role === role && item.username === username && item.password === password,
+    );
+
+    if (!matched) {
+      alert('Username, password, atau role tidak valid.');
+      return;
+    }
+
+    setUser(matched);
+  };
+
+  const handleLogout = () => setUser(null);
+
+  const handleFormChange = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+
+  const handleUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      alert('Silakan pilih file gambar.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result);
+      setForm((prev) => ({ ...prev, upload: value }));
+      setPreviewImage(value);
+      setPreviewName(file.name || 'upload.png');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveTransaction = () => {
+    const payload = {
+      ...form,
+      id: Date.now(),
+      tanggal: form.tanggal || new Date().toISOString().slice(0, 10),
+      shift: form.shift || getShiftLabel(),
+      totalIn: Number(form.totalIn || 0),
+      totalOut: Number(form.totalOut || 0),
+      total: Number(form.total || 0),
+      nomorTransaksi: form.nomorTransaksi.trim(),
+      kodeEkspeditur: form.kodeEkspeditur.trim(),
+      kodeGudangAsal: form.kodeGudangAsal.trim(),
+      kodeGudangTujuan: form.kodeGudangTujuan.trim(),
+      namaEkspeditur: form.namaEkspeditur.trim(),
+      namaGudangAsal: form.namaGudangAsal.trim(),
+      namaGudangTujuan: form.namaGudangTujuan.trim(),
+    };
+
+    if (!payload.tanggal || !payload.nomorTransaksi) {
+      alert('Tanggal dan nomor transaksi wajib diisi.');
+      return;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      transactions: [payload, ...prev.transactions],
+    }));
+
+    resetTransactionForm();
+    alert('Transaksi berhasil disimpan.');
+  };
+
+  const resetTransactionForm = () => {
+    setForm({
+      tanggal: new Date().toISOString().slice(0, 10),
+      plant: data.plants[0]?.code || '',
+      shift: getShiftLabel(),
+      jenisTransaksi: data.transactionTypes[0]?.code || '',
+      lokasi: data.locations[0] || '',
+      nomorTransaksi: '',
+      kodeEkspeditur: '',
+      namaEkspeditur: '',
+      kodeGudangAsal: '',
+      namaGudangAsal: '',
+      kodeGudangTujuan: '',
+      namaGudangTujuan: '',
+      inRfi: 0,
+      inTbr: 0,
+      inBer: 0,
+      outRfi: 0,
+      outTbr: 0,
+      outBer: 0,
+      totalIn: 0,
+      totalOut: 0,
+      total: 0,
+      catatan: '',
+      upload: '',
+    });
+    setPreviewImage('');
+  };
+
+  const handleAddWarehouse = () => {
+    if (!warehouseForm.code.trim() || !warehouseForm.name.trim()) {
+      alert('Kode dan nama gudang wajib diisi.');
+      return;
+    }
+
+    if (data.warehouses.some((item) => item.code.toLowerCase() === warehouseForm.code.trim().toLowerCase())) {
+      alert('Kode gudang sudah ada.');
+      return;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      warehouses: [...prev.warehouses, { code: warehouseForm.code.trim(), name: warehouseForm.name.trim() }],
+    }));
+    setWarehouseForm({ code: '', name: '' });
+  };
+
+  const handleAddExpediteur = () => {
+    if (!expediteurForm.code.trim() || !expediteurForm.name.trim()) {
+      alert('Kode dan nama ekspeditur wajib diisi.');
+      return;
+    }
+
+    if (data.expediteurs.some((item) => item.code.toLowerCase() === expediteurForm.code.trim().toLowerCase())) {
+      alert('Kode ekspeditur sudah ada.');
+      return;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      expediteurs: [...prev.expediteurs, { code: expediteurForm.code.trim(), name: expediteurForm.name.trim() }],
+    }));
+    setExpediteurForm({ code: '', name: '' });
+  };
+
+  const handleAddPlant = () => {
+    if (!plantForm.code.trim() || !plantForm.name.trim()) {
+      alert('Kode dan nama plant wajib diisi.');
+      return;
+    }
+
+    if (data.plants.some((item) => item.code.toLowerCase() === plantForm.code.trim().toLowerCase())) {
+      alert('Kode plant sudah ada.');
+      return;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      plants: [...prev.plants, { code: plantForm.code.trim(), name: plantForm.name.trim() }],
+    }));
+    setPlantForm({ code: '', name: '' });
+  };
+
+  const handleAddTransactionType = () => {
+    if (!typeForm.code.trim() || !typeForm.name.trim()) {
+      alert('Kode dan nama jenis transaksi wajib diisi.');
+      return;
+    }
+
+    if (data.transactionTypes.some((item) => item.code.toLowerCase() === typeForm.code.trim().toLowerCase())) {
+      alert('Kode jenis transaksi sudah ada.');
+      return;
+    }
+
+    setData((prev) => ({
+      ...prev,
+      transactionTypes: [...prev.transactionTypes, { code: typeForm.code.trim(), name: typeForm.name.trim() }],
+    }));
+    setTypeForm({ code: '', name: '' });
+  };
+
+  const deleteWarehouse = (code) => {
+    setData((prev) => ({
+      ...prev,
+      warehouses: prev.warehouses.filter((item) => item.code !== code),
+    }));
+  };
+
+  const deleteExpediteur = (code) => {
+    setData((prev) => ({
+      ...prev,
+      expediteurs: prev.expediteurs.filter((item) => item.code !== code),
+    }));
+  };
+
+  const deletePlant = (code) => {
+    setData((prev) => ({
+      ...prev,
+      plants: prev.plants.filter((item) => item.code !== code),
+    }));
+  };
+
+  const deleteTransactionType = (code) => {
+    setData((prev) => ({
+      ...prev,
+      transactionTypes: prev.transactionTypes.filter((item) => item.code !== code),
+    }));
+  };
+
+  const exportToExcel = () => {
+    const rows = filteredTransactions.map((item) => ({
+      Tanggal: item.tanggal,
+      Plant: item.plant,
+      Shift: item.shift,
+      Jenis_Transaksi: getTypeName(item.jenisTransaksi, data.transactionTypes),
+      Lokasi: item.lokasi,
+      Nomor_Transaksi: item.nomorTransaksi,
+      Kode_Ekspeditur: item.kodeEkspeditur,
+      Nama_Ekspeditur: item.namaEkspeditur,
+      Kode_Gudang_Asal: item.kodeGudangAsal,
+      Nama_Gudang_Asal: item.namaGudangAsal,
+      Kode_Gudang_Tujuan: item.kodeGudangTujuan,
+      Nama_Gudang_Tujuan: item.namaGudangTujuan,
+      In_RFI: item.inRfi,
+      In_TBR: item.inTbr,
+      In_BER: item.inBer,
+      Total_In: item.totalIn,
+      Out_RFI: item.outRfi,
+      Out_TBR: item.outTbr,
+      Out_BER: item.outBer,
+      Total_Out: item.totalOut,
+      Total: item.total,
+      Catatan: item.catatan,
+    }));
+
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Transaksi');
+    XLSX.writeFile(workbook, 'pallet-monitoring-system.xlsx');
+  };
+
+  const dashboardStats = useMemo(() => {
+    const totalEntries = data.transactions.length;
+    const onPosition = data.transactions.filter((item) => item.total > 0).length;
+    const onPool = data.transactions.filter((item) => item.totalOut > 0).length;
+    const rilis = data.transactions.filter((item) => item.totalIn > 0).length;
+    const tonaseGudang = data.transactions.reduce((sum, item) => sum + item.total, 0);
+
+    return {
+      onPosition,
+      onPool,
+      rilis,
+      tonaseGudang,
+      totalEntries,
+    };
+  }, [data.transactions]);
+
+  const tabData = {
+    tab1: data.transactions.slice(0, 6).map((item) => ({
+      nomorTransaksi: item.nomorTransaksi,
+      gudangAsal: item.namaGudangAsal || item.kodeGudangAsal,
+      gudangTujuan: item.namaGudangTujuan || item.kodeGudangTujuan,
+      jenis: getTypeName(item.jenisTransaksi, data.transactionTypes),
+      total: item.total,
+      status: 'Aktif',
+    })),
+    tab2: data.transactions.slice(0, 6).map((item) => ({
+      nomorTransaksi: item.nomorTransaksi,
+      lokasi: item.lokasi,
+      plant: item.plant,
+      shift: item.shift,
+      total: item.total,
+      status: 'On Pool',
+    })),
+    tab3: data.transactions.slice(0, 6).map((item) => ({
+      nomorTransaksi: item.nomorTransaksi,
+      ekspeditur: item.namaEkspeditur || item.kodeEkspeditur,
+      gudangTujuan: item.namaGudangTujuan || item.kodeGudangTujuan,
+      total: item.total,
+      status: 'Ready',
+    })),
+    tab4: data.warehouses.map((warehouse) => {
+      const total = data.transactions
+        .filter((item) => item.namaGudangAsal === warehouse.name || item.namaGudangTujuan === warehouse.name)
+        .reduce((sum, item) => sum + item.total, 0);
+      return {
+        gudang: warehouse.name,
+        tonase: total,
+        rataRata: Math.max(0, Math.round(total / 2)),
+        trend: `↑ ${Math.max(1, Math.round(total / 10))}%`,
+      };
+    }),
+    tab5: data.expediteurs.map((expediteur) => {
+      const total = data.transactions
+        .filter((item) => item.namaEkspeditur === expediteur.name)
+        .reduce((sum, item) => sum + item.total, 0);
+      return {
+        ekspeditur: expediteur.name,
+        tonase: total,
+        rataRata: Math.max(0, Math.round(total / 2)),
+        trend: `↑ ${Math.max(1, Math.round(total / 8))}%`,
+      };
+    }),
+    tab6: data.transactions.slice(0, 8).map((item) => ({
+      gudang: item.namaGudangAsal || item.kodeGudangAsal,
+      lokasi: item.lokasi,
+      shift: item.shift,
+      total: item.total,
+      catatan: item.catatan || '-',
+    })),
+    tab7: data.transactions.slice(0, 8).map((item) => ({
+      ekspeditur: item.namaEkspeditur || item.kodeEkspeditur,
+      kode: item.kodeEkspeditur,
+      gudangAsal: item.namaGudangAsal || item.kodeGudangAsal,
+      gudangTujuan: item.namaGudangTujuan || item.kodeGudangTujuan,
+      total: item.total,
+    })),
+  };
+
+  const isGuest = user?.role === 'pengunjung';
+
+  if (!user) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="login-header">
+            <div className="brand-mark">📦</div>
+            <h1>Pallet Management System</h1>
+          </div>
+
+          <div className="login-body">
+            <div className="field-group">
+              <label>Role</label>
+              <select
+                value={loginForm.role}
+                onChange={(e) => setLoginForm((prev) => ({ ...prev, role: e.target.value }))}
+              >
+                <option value="admin">Admin</option>
+                <option value="operator">Operator</option>
+                <option value="pengunjung">Pengunjung</option>
+              </select>
+            </div>
+
+            <div className="field-group">
+              <label>Username</label>
+              <input
+                type="text"
+                value={loginForm.username}
+                onChange={(e) => setLoginForm((prev) => ({ ...prev, username: e.target.value }))}
+              />
+            </div>
+
+            <div className="field-group">
+              <label>Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={(e) => setLoginForm((prev) => ({ ...prev, password: e.target.value }))}
+              />
+            </div>
+
+            <div className="login-actions">
+              <button className="btn btn-primary" onClick={handleLogin}>Login</button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  const match = data.users.find((item) => item.role === loginForm.role);
+                  if (match) {
+                    setLoginForm((prev) => ({ ...prev, username: match.username, password: match.password }));
+                  }
+                }}
+              >
+                Demo Login
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <header className="header">
+        <div className="brand">
+          <div className="brand-mark">📦</div>
+          <h2>Pallet Management System</h2>
+        </div>
+
+        <div className="header-actions">
+          <span className="user-badge">{user.role.toUpperCase()}</span>
+          <button className="btn btn-primary" onClick={handleLogout}>Logout</button>
+        </div>
+      </header>
+
+      <div className="page-shell">
+        <aside className="sidebar">
+          <button className={activeSection === 'dashboard' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('dashboard')}>
+            Dashboard
+          </button>
+          <button className={activeSection === 'transactions' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('transactions')}>
+            Transaksi
+          </button>
+          {!isGuest && (
+            <>
+              <button className={activeSection === 'warehouse' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('warehouse')}>
+                DB Gudang
+              </button>
+              <button className={activeSection === 'expediteur' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('expediteur')}>
+                DB Ekspeditur
+              </button>
+              <button className={activeSection === 'plant' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('plant')}>
+                DB Plant
+              </button>
+              <button className={activeSection === 'transactionType' ? 'nav-btn active' : 'nav-btn'} onClick={() => setActiveSection('transactionType')}>
+                DB Jenis Transaksi
+              </button>
+            </>
+          )}
+        </aside>
+
+        <main className="content">
+          {activeSection === 'dashboard' && (
+            <section className="panel">
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <span className="stat-label">Pallet On Position</span>
+                  <strong>{dashboardStats.onPosition}</strong>
+                  <small>Live</small>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-label">Pallet On Pool</span>
+                  <strong>{dashboardStats.onPool}</strong>
+                  <small>Live</small>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-label">Rilis Pallet</span>
+                  <strong>{dashboardStats.rilis}</strong>
+                  <small>Live</small>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-label">Tonase Gudang</span>
+                  <strong>{dashboardStats.tonaseGudang}</strong>
+                  <small>Ton</small>
+                </div>
+              </div>
+
+              <div className="card">
+                <div className="section-head">
+                  <h3>Monitoring Dashboard</h3>
+                </div>
+
+                <div className="tabs">
+                  {['tab1', 'tab2', 'tab3', 'tab4', 'tab5', 'tab6', 'tab7'].map((tab) => (
+                    <button
+                      key={tab}
+                      className={activeTab === tab ? 'tab-btn active' : 'tab-btn'}
+                      onClick={() => setActiveTab(tab)}
+                    >
+                      {tab === 'tab1' && 'Pallet On Position'}
+                      {tab === 'tab2' && 'Pallet On Pool'}
+                      {tab === 'tab3' && 'Rilis Pallet'}
+                      {tab === 'tab4' && 'Tonase Gudang'}
+                      {tab === 'tab5' && 'Tonase Ekspeditur'}
+                      {tab === 'tab6' && 'Monitoring Gudang'}
+                      {tab === 'tab7' && 'Monitoring Ekspeditur'}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="tab-panel">
+                  {activeTab === 'tab1' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Nomor Transaksi</th>
+                          <th>Gudang Asal</th>
+                          <th>Gudang Tujuan</th>
+                          <th>Jenis</th>
+                          <th>Total</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab1.map((row) => (
+                          <tr key={row.nomorTransaksi}>
+                            <td>{row.nomorTransaksi}</td>
+                            <td>{row.gudangAsal}</td>
+                            <td>{row.gudangTujuan}</td>
+                            <td>{row.jenis}</td>
+                            <td>{row.total}</td>
+                            <td><span className="status-badge success">{row.status}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab2' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Nomor Transaksi</th>
+                          <th>Lokasi</th>
+                          <th>Plant</th>
+                          <th>Shift</th>
+                          <th>Total</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab2.map((row) => (
+                          <tr key={row.nomorTransaksi}>
+                            <td>{row.nomorTransaksi}</td>
+                            <td>{row.lokasi}</td>
+                            <td>{row.plant}</td>
+                            <td>{row.shift}</td>
+                            <td>{row.total}</td>
+                            <td><span className="status-badge warning">{row.status}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab3' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Nomor Transaksi</th>
+                          <th>Ekspeditur</th>
+                          <th>Gudang Tujuan</th>
+                          <th>Total</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab3.map((row) => (
+                          <tr key={row.nomorTransaksi}>
+                            <td>{row.nomorTransaksi}</td>
+                            <td>{row.ekspeditur}</td>
+                            <td>{row.gudangTujuan}</td>
+                            <td>{row.total}</td>
+                            <td><span className="status-badge info">{row.status}</span></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab4' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Gudang</th>
+                          <th>Tonase</th>
+                          <th>Rata-rata</th>
+                          <th>Trend</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab4.map((row) => (
+                          <tr key={row.gudang}>
+                            <td>{row.gudang}</td>
+                            <td>{row.tonase}</td>
+                            <td>{row.rataRata}</td>
+                            <td>{row.trend}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab5' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ekspeditur</th>
+                          <th>Tonase</th>
+                          <th>Rata-rata</th>
+                          <th>Trend</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab5.map((row) => (
+                          <tr key={row.ekspeditur}>
+                            <td>{row.ekspeditur}</td>
+                            <td>{row.tonase}</td>
+                            <td>{row.rataRata}</td>
+                            <td>{row.trend}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab6' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Gudang</th>
+                          <th>Lokasi</th>
+                          <th>Shift</th>
+                          <th>Total</th>
+                          <th>Catatan</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab6.map((row) => (
+                          <tr key={`${row.gudang}-${row.lokasi}`}>
+                            <td>{row.gudang}</td>
+                            <td>{row.lokasi}</td>
+                            <td>{row.shift}</td>
+                            <td>{row.total}</td>
+                            <td>{row.catatan}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {activeTab === 'tab7' && (
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Ekspeditur</th>
+                          <th>Kode</th>
+                          <th>Gudang Asal</th>
+                          <th>Gudang Tujuan</th>
+                          <th>Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabData.tab7.map((row) => (
+                          <tr key={`${row.ekspeditur}-${row.kode}`}>
+                            <td>{row.ekspeditur}</td>
+                            <td>{row.kode}</td>
+                            <td>{row.gudangAsal}</td>
+                            <td>{row.gudangTujuan}</td>
+                            <td>{row.total}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeSection === 'transactions' && (
+            <section className="panel">
+              <div className="card">
+                <div className="section-head between">
+                  <h3>Form Input Transaksi</h3>
+                  <div className="toolbar-inline">
+                    <input
+                      type="text"
+                      placeholder="Pencarian cepat"
+                      value={txSearch}
+                      onChange={(e) => setTxSearch(e.target.value)}
+                    />
+                    <button className="btn btn-primary" onClick={exportToExcel}>Unduh Excel</button>
+                  </div>
+                </div>
+
+                <div className="form-grid two-cols">
+                  <div className="field-group">
+                    <label>Tanggal</label>
+                    <input type="date" value={form.tanggal} readOnly />
+                  </div>
+                  <div className="field-group">
+                    <label>Plant</label>
+                    <select
+                      value={form.plant}
+                      onChange={(e) => handleFormChange('plant', e.target.value)}
+                    >
+                      {data.plants.map((plant) => (
+                        <option key={plant.code} value={plant.code}>{plant.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field-group">
+                    <label>Shift</label>
+                    <input type="text" value={form.shift} readOnly />
+                  </div>
+                  <div className="field-group">
+                    <label>Jenis Transaksi</label>
+                    <select
+                      value={form.jenisTransaksi}
+                      onChange={(e) => handleFormChange('jenisTransaksi', e.target.value)}
+                    >
+                      {data.transactionTypes.map((type) => (
+                        <option key={type.code} value={type.code}>{type.name}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field-group">
+                    <label>Lokasi</label>
+                    <select
+                      value={form.lokasi}
+                      onChange={(e) => handleFormChange('lokasi', e.target.value)}
+                    >
+                      {data.locations.map((location) => (
+                        <option key={location} value={location}>{location}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field-group">
+                    <label>Nomor Transaksi</label>
+                    <input
+                      type="text"
+                      value={form.nomorTransaksi}
+                      onChange={(e) => handleFormChange('nomorTransaksi', e.target.value)}
+                      placeholder="TX-001"
+                    />
+                  </div>
+
+                  <div className="field-group">
+                    <label>Kode Ekspeditur</label>
+                    <input
+                      type="text"
+                      value={form.kodeEkspeditur}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        handleFormChange('kodeEkspeditur', value);
+                        handleFormChange('namaEkspeditur', getNameByCode(data.expediteurs, value));
+                      }}
+                    />
+                  </div>
+                  <div className="field-group">
+                    <label>Nama Ekspeditur</label>
+                    <input type="text" value={form.namaEkspeditur} readOnly />
+                  </div>
+
+                  <div className="field-group">
+                    <label>Kode Gudang Asal</label>
+                    <input
+                      type="text"
+                      value={form.kodeGudangAsal}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        handleFormChange('kodeGudangAsal', value);
+                        handleFormChange('namaGudangAsal', getNameByCode(data.warehouses, value));
+                      }}
+                    />
+                  </div>
+                  <div className="field-group">
+                    <label>Nama Gudang Asal</label>
+                    <input type="text" value={form.namaGudangAsal} readOnly />
+                  </div>
+
+                  <div className="field-group">
+                    <label>Kode Gudang Tujuan</label>
+                    <input
+                      type="text"
+                      value={form.kodeGudangTujuan}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        handleFormChange('kodeGudangTujuan', value);
+                        handleFormChange('namaGudangTujuan', getNameByCode(data.warehouses, value));
+                      }}
+                    />
+                  </div>
+                  <div className="field-group">
+                    <label>Nama Gudang Tujuan</label>
+                    <input type="text" value={form.namaGudangTujuan} readOnly />
+                  </div>
+                </div>
+
+                <div className="mini-grid">
+                  <div className="field-group">
+                    <label>In RFI</label>
+                    <input type="number" value={form.inRfi} onChange={(e) => handleFormChange('inRfi', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>In TBR</label>
+                    <input type="number" value={form.inTbr} onChange={(e) => handleFormChange('inTbr', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>In BER</label>
+                    <input type="number" value={form.inBer} onChange={(e) => handleFormChange('inBer', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>Total In</label>
+                    <input type="number" value={form.totalIn} readOnly />
+                  </div>
+
+                  <div className="field-group">
+                    <label>Out RFI</label>
+                    <input type="number" value={form.outRfi} onChange={(e) => handleFormChange('outRfi', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>Out TBR</label>
+                    <input type="number" value={form.outTbr} onChange={(e) => handleFormChange('outTbr', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>Out BER</label>
+                    <input type="number" value={form.outBer} onChange={(e) => handleFormChange('outBer', Number(e.target.value || 0))} />
+                  </div>
+                  <div className="field-group">
+                    <label>Total Out</label>
+                    <input type="number" value={form.totalOut} readOnly />
+                  </div>
+                </div>
+
+                <div className="form-grid two-cols mb-16">
+                  <div className="field-group">
+                    <label>Total</label>
+                    <input type="number" value={form.total} readOnly />
+                  </div>
+                  <div className="field-group">
+                    <label>Upload BA/SJP</label>
+                    <div className="file-box">
+                      <input type="file" accept="image/*" onChange={handleUpload} />
+                      {form.upload && (
+                        <img
+                          src={form.upload}
+                          alt="Preview upload"
+                          className="upload-preview-thumb"
+                          onClick={() => {
+                            setPreviewImage(form.upload);
+                            setPreviewName('BA-SJP');
+                          }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="field-group">
+                  <label>Catatan</label>
+                  <textarea value={form.catatan} onChange={(e) => handleFormChange('catatan', e.target.value)} />
+                </div>
+
+                <div className="action-row">
+                  <button className="btn btn-primary" onClick={handleSaveTransaction}>Simpan Transaksi</button>
+                  <button className="btn btn-secondary" onClick={resetTransactionForm}>Reset</button>
+                </div>
+              </div>
+
+              <div className="card mt-24">
+                <div className="section-head">
+                  <h3>Data Transaksi</h3>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Tanggal</th>
+                        <th>Plant</th>
+                        <th>Shift</th>
+                        <th>Jenis</th>
+                        <th>Lokasi</th>
+                        <th>Nomor</th>
+                        <th>Ekspeditur</th>
+                        <th>Gudang Asal</th>
+                        <th>Gudang Tujuan</th>
+                        <th>Total</th>
+                        <th>Upload</th>
+                        <th>Catatan</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredTransactions.map((item) => (
+                        <tr key={item.id}>
+                          <td>{item.tanggal}</td>
+                          <td>{item.plant}</td>
+                          <td>{item.shift}</td>
+                          <td>{getTypeName(item.jenisTransaksi, data.transactionTypes)}</td>
+                          <td>{item.lokasi}</td>
+                          <td>{item.nomorTransaksi}</td>
+                          <td>{item.namaEkspeditur || item.kodeEkspeditur}</td>
+                          <td>{item.namaGudangAsal || item.kodeGudangAsal}</td>
+                          <td>{item.namaGudangTujuan || item.kodeGudangTujuan}</td>
+                          <td>{item.total}</td>
+                          <td>
+                            {item.upload ? (
+                              <button
+                                className="tiny-btn"
+                                onClick={() => {
+                                  setPreviewImage(item.upload);
+                                  setPreviewName(`${item.nomorTransaksi}-ba-sjp`);
+                                }}
+                              >
+                                Lihat
+                              </button>
+                            ) : (
+                              '-'
+                            )}
+                          </td>
+                          <td>{item.catatan || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!isGuest && activeSection === 'warehouse' && (
+            <section className="panel">
+              <div className="card">
+                <h3>Database Gudang</h3>
+                <div className="toolbar-row">
+                  <input
+                    type="text"
+                    placeholder="Kode Gudang"
+                    value={warehouseForm.code}
+                    onChange={(e) => setWarehouseForm((prev) => ({ ...prev, code: e.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Nama Gudang"
+                    value={warehouseForm.name}
+                    onChange={(e) => setWarehouseForm((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                  <button className="btn btn-primary" onClick={handleAddWarehouse}>Tambah Gudang</button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Kode Gudang</th>
+                        <th>Nama Gudang</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.warehouses.map((item) => (
+                        <tr key={item.code}>
+                          <td>{item.code}</td>
+                          <td>{item.name}</td>
+                          <td>
+                            <button className="btn btn-danger" onClick={() => deleteWarehouse(item.code)}>Hapus</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!isGuest && activeSection === 'expediteur' && (
+            <section className="panel">
+              <div className="card">
+                <h3>Database Ekspeditur</h3>
+                <div className="toolbar-row">
+                  <input
+                    type="text"
+                    placeholder="Kode Ekspeditur"
+                    value={expediteurForm.code}
+                    onChange={(e) => setExpediteurForm((prev) => ({ ...prev, code: e.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Nama Ekspeditur"
+                    value={expediteurForm.name}
+                    onChange={(e) => setExpediteurForm((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                  <button className="btn btn-primary" onClick={handleAddExpediteur}>Tambah Ekspeditur</button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Kode</th>
+                        <th>Nama</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.expediteurs.map((item) => (
+                        <tr key={item.code}>
+                          <td>{item.code}</td>
+                          <td>{item.name}</td>
+                          <td>
+                            <button className="btn btn-danger" onClick={() => deleteExpediteur(item.code)}>Hapus</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!isGuest && activeSection === 'plant' && (
+            <section className="panel">
+              <div className="card">
+                <h3>Database Plant</h3>
+                <div className="toolbar-row">
+                  <input
+                    type="text"
+                    placeholder="Kode Plant"
+                    value={plantForm.code}
+                    onChange={(e) => setPlantForm((prev) => ({ ...prev, code: e.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Nama Plant"
+                    value={plantForm.name}
+                    onChange={(e) => setPlantForm((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                  <button className="btn btn-primary" onClick={handleAddPlant}>Tambah Plant</button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Kode Plant</th>
+                        <th>Nama Plant</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.plants.map((item) => (
+                        <tr key={item.code}>
+                          <td>{item.code}</td>
+                          <td>{item.name}</td>
+                          <td>
+                            <button className="btn btn-danger" onClick={() => deletePlant(item.code)}>Hapus</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!isGuest && activeSection === 'transactionType' && (
+            <section className="panel">
+              <div className="card">
+                <h3>Database Jenis Transaksi</h3>
+                <div className="toolbar-row">
+                  <input
+                    type="text"
+                    placeholder="Kode Jenis"
+                    value={typeForm.code}
+                    onChange={(e) => setTypeForm((prev) => ({ ...prev, code: e.target.value }))}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Nama Jenis"
+                    value={typeForm.name}
+                    onChange={(e) => setTypeForm((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                  <button className="btn btn-primary" onClick={handleAddTransactionType}>Tambah Jenis</button>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Kode</th>
+                        <th>Nama</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.transactionTypes.map((item) => (
+                        <tr key={item.code}>
+                          <td>{item.code}</td>
+                          <td>{item.name}</td>
+                          <td>
+                            <button className="btn btn-danger" onClick={() => deleteTransactionType(item.code)}>Hapus</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+          )}
+        </main>
+      </div>
+
+      {previewImage && (
+        <div className="image-modal" onClick={() => setPreviewImage('')}>
+          <div className="image-modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="image-modal-header">
+              <span>Preview {previewName || 'Gambar'}</span>
+              <button className="btn btn-secondary" onClick={() => setPreviewImage('')}>Tutup</button>
+            </div>
+            <img src={previewImage} alt="Preview" />
+            <a className="btn btn-primary" href={previewImage} download={`${previewName || 'ba-sjp'}.png`}>
+              Unduh Gambar
+            </a>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default App;
